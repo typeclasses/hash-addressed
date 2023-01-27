@@ -1,0 +1,53 @@
+`hash-addressed` is a simple system for maintaining a directory wherein each
+file's name is a hash of its content.
+
+```haskell
+import qualified HashAddressed.Directory    as Dir
+import qualified HashAddressed.HashFunction as Hash
+import qualified Data.ByteString.Lazy       as Lazy
+import qualified Data.ByteString            as Strict
+```
+
+First define a `ContentAddressedDirectory` value by specifying which hash
+function to use and the path of the directory in which the files shall be kept.
+The directory does not need to already exist.
+
+```haskell
+Dir.init :: Hash.HashFunction -> FilePath
+    -> Dir.ContentAddressedDirectory
+```
+
+Presently the only supported hash function is `Hash.SHA_256`.
+
+You can then write files into the directory using one of the two *write*
+functions:
+
+```haskell
+Dir.writeLazy :: Dir.ContentAddressedDirectory
+    -> Lazy.ByteString -> IO Dir.WriteResult
+```
+
+```haskell
+Dir.writeStreaming :: Dir.ContentAddressedDirectory
+    -> (forall m. MonadIO m => (Strict.ByteString -> m ()) -> m ())
+    -> IO Dir.WriteResult
+```
+
+The `IO` action returns a `WriteResult`, which gives you the path of the file in
+the store, including the path of the store itself. The `WriteType` value
+indicates whether the file was actually written by this action or was present in
+the store already.
+
+```haskell
+data WriteResult = WriteResult{ contentAddressedFile :: FilePath,
+                                writeType :: Dir.WriteType }
+```
+
+```haskell
+data WriteType = AlreadyPresent | NewContent
+```
+
+All operations that write into a hash-addressed directory are performed by first
+writing the content somewhere within the system temporary directory and then
+moving the file to its target location. This ensures that the store never makes
+visible the results of a partial write.
