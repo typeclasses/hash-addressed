@@ -70,7 +70,7 @@ writeStreaming dir continue = Resource.runResourceT @IO
     {-  We will write the file into this directory and then move it out in an
         atomic rename operation that will commit the file to the store.  -}
     (_, temporaryDirectory) <- Resource.allocate
-        (Temporary.createTempDirectory temporaryRoot "cafs")
+        (Temporary.createTempDirectory temporaryRoot "hash-addressed")
         Directory.removeDirectoryRecursive {- (🧹) -}
 
     {-  If the file never gets moved, then when the directory is removed
@@ -80,7 +80,7 @@ writeStreaming dir continue = Resource.runResourceT @IO
         but the file, which no longer resides within the directory, will remain. -}
 
     {-  The path of the file we're writing, in its temporary location  -}
-    let temporaryFile = temporaryDirectory </> "cafs-file"
+    let temporaryFile = temporaryDirectory </> "hash-addressed-file"
 
     {-  Create the file and open a handle to write to it  -}
     (handleRelease, handle) <- Resource.allocate
