@@ -1,7 +1,8 @@
 module HashAddressed.Directory
   (
     {- * Type -} ContentAddressedDirectory, init,
-    {- * Write operations -} writeStreaming, writeLazy,
+    {- * Write operations -}
+            writeLazy, writeStreaming, writeEither,
             WriteResult (..), WriteType (..),
   )
   where
@@ -10,6 +11,7 @@ import Essentials
 import HashAddressed.HashFunction
 
 import Control.Monad.IO.Class (MonadIO)
+import Data.Either (Either)
 import Data.Function (flip)
 import Prelude (FilePath, IO)
 import System.FilePath ((</>))
@@ -25,6 +27,7 @@ import qualified Data.ByteString.Base16 as Base16
 import qualified Data.ByteString.Char8 as Strict.ByteString.Char8
 import qualified Data.ByteString.Lazy as Lazy
 import qualified Data.ByteString.Lazy as Lazy.ByteString
+import qualified Data.Either as Either
 import qualified System.Directory as Directory
 import qualified System.IO as IO
 import qualified System.IO.Temp as Temporary
@@ -52,14 +55,16 @@ init ::
 init SHA_256 = ContentAddressedDirectory
 
 {-| Write a stream of strict byte strings to a content-addressed directory -}
-writeStreaming ::
+writeEither ::
     ContentAddressedDirectory
         {- ^ The content-addressed file store to write to; see 'init' -}
-    -> (forall m. MonadIO m => (Strict.ByteString -> m ()) -> m ())
+    -> (forall m. MonadIO m => (Strict.ByteString -> m ()) -> m (Either bad good))
         {- ^ Monadic action which is allowed to emit 'Strict.ByteString's
-             and do I/O -}
-    -> IO WriteResult
-writeStreaming dir continue = Resource.runResourceT @IO
+             and do I/O. The action should return 'Either.Right' once the content
+             has been successfully written. If the action returns 'Either.Left' or
+             throws an exception, then nothing will be committed to the store. -}
+    -> IO (Either bad (good, WriteResult))
+writeEither dir stream = Resource.runResourceT @IO
   do
     {-  Where the system in general keeps its temporary files  -}
     temporaryRoot <- Monad.lift Temporary.getCanonicalTemporaryDirectory
@@ -89,8 +94,8 @@ writeStreaming dir continue = Resource.runResourceT @IO
 
     {-  Run the continuation, doing two things at once with the byte string
         chunks it gives us:  -}
-    hashState :: Hash.Ctx <- Monad.lift $ flip Monad.execStateT Hash.init $
-        continue \chunk ->
+    (badOrGood, hashState :: Hash.Ctx) <- Monad.lift $ flip Monad.runStateT Hash.init $
+        stream \chunk ->
           do
             {-  1. Write to the file  -}
             Monad.lift $ Strict.ByteString.hPut handle chunk
@@ -101,33 +106,54 @@ writeStreaming dir continue = Resource.runResourceT @IO
     {-  Once we're done writing the file, we no longer need the handle.  -}
     Resource.release handleRelease {- (🍓) -}
 
-    {-  The final location where the file will reside  -}
-    let contentAddressedFile = directory dir </>
-            Strict.ByteString.Char8.unpack
-                (Base16.encode (Hash.finalize hashState))
+    case badOrGood of
+        Either.Left bad -> pure $ Either.Left bad
+        Either.Right good -> do
 
-    {-  Another file of the same name in the content-addressed directory
-        might already exist.  -}
-    writeType <- Monad.lift (Directory.doesPathExist contentAddressedFile)
-          <&> \case{ True -> AlreadyPresent; False -> NewContent }
+            {-  The final location where the file will reside  -}
+            let contentAddressedFile = directory dir </>
+                    Strict.ByteString.Char8.unpack
+                        (Base16.encode (Hash.finalize hashState))
 
-    case writeType of
+            {-  Another file of the same name in the content-addressed directory
+                might already exist.  -}
+            writeType <- Monad.lift (Directory.doesPathExist contentAddressedFile)
+                  <&> \case{ True -> AlreadyPresent; False -> NewContent }
 
-        {-  In one atomic step, this action commits the file to the store
-            and prevents it from being deleted by the directory cleanup
-            action (🧹).  -}
-        NewContent -> Monad.lift $
-            Directory.renamePath temporaryFile contentAddressedFile
+            case writeType of
 
-        {-  Since the store is content-addressed, we assume that two files
-            with the same name have the same contents. Therefore, if a file
-            already exists at this path, there is no reason to take any
-            action.  -}
-        AlreadyPresent -> pure ()
+                {-  In one atomic step, this action commits the file to the store
+                    and prevents it from being deleted by the directory cleanup
+                    action (🧹).  -}
+                NewContent -> Monad.lift $
+                    Directory.renamePath temporaryFile contentAddressedFile
 
-    pure WriteResult{ contentAddressedFile, writeType }
+                {-  Since the store is content-addressed, we assume that two files
+                    with the same name have the same contents. Therefore, if a file
+                    already exists at this path, there is no reason to take any
+                    action.  -}
+                AlreadyPresent -> pure ()
 
-{-| Write a lazy byte string to a content-addressed directory -}
+            pure $ Either.Right (good, WriteResult{ contentAddressedFile, writeType })
+
+{-| Write a stream of strict byte strings to a content-addressed directory
+
+This is a simplified variant of 'writeEither'. -}
+writeStreaming ::
+    ContentAddressedDirectory
+        {- ^ The content-addressed file store to write to; see 'init' -}
+    -> (forall m. MonadIO m => (Strict.ByteString -> m ()) -> m ())
+        {- ^ Monadic action which is allowed to emit 'Strict.ByteString's
+             and do I/O. If this action throws an exception, nothing will
+             be written to the store. -}
+    -> IO WriteResult
+writeStreaming dir stream = writeEither dir (fmap Either.Right . stream) <&> \case
+    Either.Left x -> absurd x
+    Either.Right ((), result) -> result
+
+{-| Write a lazy byte string to a content-addressed directory
+
+This is a simplified variant of 'writeStreaming'. -}
 writeLazy ::
     ContentAddressedDirectory
         {- ^ The content-addressed file store to write to; see 'init' -}
