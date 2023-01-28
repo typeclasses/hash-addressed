@@ -59,7 +59,7 @@ writeStreaming ::
         {- ^ Monadic action which is allowed to emit 'Strict.ByteString's
              and do I/O -}
     -> IO WriteResult
-writeStreaming cafs continue = Resource.runResourceT @IO
+writeStreaming dir continue = Resource.runResourceT @IO
   do
     {-  Where the system in general keeps its temporary files  -}
     temporaryRoot <- Monad.lift Temporary.getCanonicalTemporaryDirectory
@@ -102,7 +102,7 @@ writeStreaming cafs continue = Resource.runResourceT @IO
     Resource.release handleRelease {- (🍓) -}
 
     {-  The final location where the file will reside  -}
-    let contentAddressedFile = directory cafs </>
+    let contentAddressedFile = directory dir </>
             Strict.ByteString.Char8.unpack
                 (Base16.encode (Hash.finalize hashState))
 
@@ -136,5 +136,5 @@ writeLazy ::
     -> IO WriteResult
         {- ^ The file path where the contents of the lazy byte string
              now reside. This path includes the store directory. -}
-writeLazy cafs lbs = writeStreaming cafs \writeChunk ->
+writeLazy dir lbs = writeStreaming dir \writeChunk ->
     traverse_ writeChunk (Lazy.ByteString.toChunks lbs)
