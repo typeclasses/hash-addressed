@@ -52,6 +52,10 @@ data WriteType =
                    --   is already present in the directory
   | NewContent     -- ^ A new file was written into the directory
 
+{-| Path of a file that we write to before moving it into the
+    hash-addressed directory -}
+newtype TemporaryFile = TemporaryFile{ temporaryFilePath :: IO.FilePath }
+
 {-| File path within a hash-addressed directory
 
 This does no include the directory part, just the file name. -}
@@ -89,11 +93,11 @@ writeExcept dir stream = runResourceEither do
         but the file, which no longer resides within the directory, will remain. -}
 
     {-  The path of the file we're writing, in its temporary location  -}
-    let temporaryFile = temporaryDirectory </> "hash-addressed-file"
+    let temporaryFile = TemporaryFile (temporaryDirectory </> "hash-addressed-file")
 
     {-  Create the file and open a handle to write to it  -}
     (handleRelease, handle) <- Resource.allocate
-        (IO.openBinaryFile temporaryFile IO.WriteMode)
+        (IO.openBinaryFile (temporaryFilePath temporaryFile) IO.WriteMode)
         IO.hClose {- (🍓) -}
 
     {-  Run the continuation, doing two things at once with the ByteString
@@ -110,11 +114,7 @@ writeExcept dir stream = runResourceEither do
             result <- finalize dir temporaryFile name
             pure $ Either.Right (commit, result)
 
-finalize :: Pipes.MonadIO m =>
-    Directory
-    -> IO.FilePath  {- ^ Path of the temporarily file -}
-    -> HashName
-    -> m WriteResult
+finalize :: Pipes.MonadIO m => Directory -> TemporaryFile -> HashName -> m WriteResult
 finalize dir temporaryFile (HashName name) = do
 
     let hashAddressedFile = directoryPath dir </> name
@@ -129,7 +129,7 @@ finalize dir temporaryFile (HashName name) = do
         -- In one atomic step, this action commits the file to the store and prevents it
         -- from being deleted by the directory cleanup action (🧹).
         NewContent -> Monad.liftIO $
-            Directory.renamePath temporaryFile hashAddressedFile
+            Directory.renamePath (temporaryFilePath temporaryFile) hashAddressedFile
 
         -- Since the store is content-addressed, we assume that two files with the same
         -- name have the same contents. Therefore, if a file already exists at this path,
