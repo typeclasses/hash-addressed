@@ -4,7 +4,7 @@
 ### HashFunction
 
 `HashFunction` type is no longer opaque; any hash function can be supported.
-The type is now a newtype for `EffectfulFold` from the `gambler` library.
+The type is now a newtype for `Fold` from the `gambler` library.
 
 ### Directory
 
