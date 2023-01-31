@@ -1,9 +1,18 @@
 0.1.0.0 (2023-01-31)
 ----------------------------------------------------------------
 
+### HashFunction
+
+`HashFunction` type is no longer opaque; any hash function can be supported.
+The type is now a newtype for `EffectfulFold` from the `gambler` library.
+
+### Directory
+
 Renamed `ContentAddressedDirectory` to `Directory`
 
-Renamed field from `contentAddressedFile` to `hashAddressedFile`
+`Directory` constructor is now exported
+
+Removed `init` function, which is redundant to `Directory` constructor
 
 ### Pipes
 
@@ -40,6 +49,10 @@ writeExcept :: (MonadIO m, MonadError abort m) =>
     -> Producer ByteString (ExceptT abort IO) commit
     -> m (commit, WriteResult)
 ```
+
+### WriteResult
+
+Renamed field from `contentAddressedFile` to `hashAddressedFile`
 
 
 0.0.1.0 (2023-01-27)

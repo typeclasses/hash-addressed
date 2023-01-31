@@ -1,6 +1,6 @@
 module HashAddressed.Directory
   (
-    {- * Type -} Directory, init,
+    {- * Type -} Directory (..),
     {- * Write operations -}
             writeLazy, writeStream, writeExcept,
             WriteResult (..), WriteType (..),
@@ -11,58 +11,57 @@ import Essentials
 import HashAddressed.HashFunction
 
 import System.FilePath ((</>))
-import Pipes ((>->))
 
 import qualified Data.Either as Either
 import qualified Control.Monad.IO.Class as IO
 import qualified Control.Monad.Except as Except
 import qualified Control.Monad.Trans as Monad
 import qualified Control.Monad.Trans.Resource as Resource
-import qualified Control.Monad.State as State
-import qualified Crypto.Hash.SHA256 as Hash
 import qualified Data.ByteString as Strict
 import qualified Data.ByteString as Strict.ByteString
-import qualified Data.ByteString.Base16 as Base16
-import qualified Data.ByteString.Char8 as Strict.ByteString.Char8
 import qualified Data.ByteString.Lazy as Lazy
 import qualified Pipes
 import qualified Pipes.Prelude as Pipes
 import qualified System.Directory as Directory
 import qualified System.IO as IO
 import qualified System.IO.Temp as Temporary
+import qualified Fold.Effectful as Fold
 
 {-| Specification of a hash-addressed directory
 
-See 'init'. -}
-data Directory = Directory{ directory :: IO.FilePath }
+Note that the utilities in "HashAddressed.Directory" do not create the
+directory; ensure that it already exists before attempting to write.
+
+See "HashAddressed.HashFunction" for examples of hash functions. -}
+data Directory = Directory
+  { directoryPath :: IO.FilePath
+      {- ^ Directory where hash-addressed files are stored -}
+  , hashFunction :: HashFunction
+      {- ^ Hash function to use for generating file names -}
+  }
 
 data WriteResult = WriteResult
   { hashAddressedFile :: IO.FilePath
-      {- ^ The file path where the contents written by the action
-            now reside. This path includes the store directory. -}
+      {- ^ The file path where the contents written by the
+           action now reside, including the store directory -}
   , writeType :: WriteType
   }
 
-data WriteType = AlreadyPresent | NewContent
+data WriteType =
+    AlreadyPresent -- ^ No action was taken because the content
+                   --   is already present in the directory
+  | NewContent     -- ^ A new file was written into the directory
 
-init ::
-    HashFunction {- ^ Which hash function to use -}
-    -> IO.FilePath {- ^ Directory where hash-addressed files are stored
+{-| Write a stream of strict ByteStrings to a hash-addressed directory,
+    possibly aborting mid-stream with an error value instead
 
-    Note that the utilities in "HashAddressed.Directory" do not create this
-    directory; ensure that it already exists before attempting to write. -}
-    -> Directory
-init SHA_256 = Directory
-
-{-| Write a stream of strict byte strings to a hash-addressed directory,
-    possibly aborting mid-stream with an error value instead -}
+If the producer throws @abort@ or an 'IO.IO' exception, nothing will be written.
+An @abort@ thrown via 'Except.ExceptT' will be re-thrown via 'Except.MonadError',
+and an exception thrown via 'IO.IO' will be re-thrown via 'IO.IO'. -}
 writeExcept :: forall abort commit m. (IO.MonadIO m, Except.MonadError abort m) =>
-    Directory {- ^ The hash-addressed file store to write to; see 'init' -}
+    Directory -- ^ Where to write
     -> Pipes.Producer Strict.ByteString (Except.ExceptT abort IO.IO) commit
-        {- ^ Producer of strict byte string content to write
-
-             If this throws an exception, either in 'IO' on in 'ExceptT',
-             nothing will be written. -}
+        -- ^ What to write
     -> m (commit, WriteResult)
 writeExcept dir stream = runResourceEither do
 
@@ -92,70 +91,61 @@ writeExcept dir stream = runResourceEither do
         (IO.openBinaryFile temporaryFile IO.WriteMode)
         IO.hClose {- (🍓) -}
 
-    {-  Run the continuation, doing two things at once with the byte string
+    {-  Run the continuation, doing two things at once with the ByteString
         chunks it gives us: write the file, and update a hash context -}
-    abortOrCommit <- runStream handle stream
+    abortOrCommit <- Monad.lift $ runStream (hashFunction dir) handle stream
 
     {-  Once we're done writing the file, we no longer need the handle.  -}
     Resource.release handleRelease {- (🍓) -}
 
-    traverse (traverse (finalize dir temporaryFile)) abortOrCommit
+    case abortOrCommit of
+        Either.Left abort -> pure (Either.Left abort)
+        Either.Right (name, commit) -> do
+            result <- finalize dir temporaryFile name
+            pure $ Either.Right (commit, result)
 
-finalize :: Pipes.MonadIO m => Directory -> IO.FilePath -> Hash.Ctx -> m WriteResult
-finalize dir temporaryFile hashState = do
+finalize :: Pipes.MonadIO m =>
+    Directory
+    -> IO.FilePath  {- ^ Path of the temporarily file -}
+    -> IO.FilePath  {- ^ Name of the final file -}
+    -> m WriteResult
+finalize dir temporaryFile name = do
 
-    {-  The final location where the file will reside  -}
-    let hashAddressedFile = directory dir </> hashStateName hashState
+    let hashAddressedFile = directoryPath dir </> name
 
-    {-  Another file of the same name in the content-addressed directory
-        might already exist.  -}
+    -- Another file of the same name in the content-addressed directory might already exist.
     writeType <- Monad.liftIO $
           Directory.doesPathExist hashAddressedFile
           <&> \case{ True -> AlreadyPresent; False -> NewContent }
 
     case writeType of
 
-        {-  In one atomic step, this action commits the file to the store
-            and prevents it from being deleted by the directory cleanup
-            action (🧹).  -}
+        -- In one atomic step, this action commits the file to the store and prevents it
+        -- from being deleted by the directory cleanup action (🧹).
         NewContent -> Monad.liftIO $
             Directory.renamePath temporaryFile hashAddressedFile
 
-        {-  Since the store is content-addressed, we assume that two files
-            with the same name have the same contents. Therefore, if a file
-            already exists at this path, there is no reason to take any
-            action.  -}
+        -- Since the store is content-addressed, we assume that two files with the same
+        -- name have the same contents. Therefore, if a file already exists at this path,
+        -- there is no reason to take any action.
         AlreadyPresent -> pure ()
 
     pure WriteResult{ hashAddressedFile, writeType }
 
-hashStateName :: Hash.Ctx -> IO.FilePath
-hashStateName = Strict.ByteString.Char8.unpack . Base16.encode . Hash.finalize
-
-runStream :: IO.Handle
+runStream :: forall abort commit. HashFunction -> IO.Handle
     -> Pipes.Producer Strict.ByteString (Except.ExceptT abort IO.IO) commit
-    -> Resource.ResourceT IO.IO (Either.Either abort (commit, Hash.Ctx))
-runStream handle stream =
-    Except.runExceptT $ runHashState $ Pipes.runEffect $
-        hoistStream stream >-> Pipes.mapM_ (writeAndHash handle)
+    -> IO.IO (Either.Either abort (IO.FilePath, commit))
+runStream hash handle stream =
+    case writeAndHash hash handle of
+        Fold.EffectfulFold{ Fold.initial, Fold.step, Fold.extract } ->
+            Except.runExceptT $
+                Pipes.foldM' step initial extract stream
 
-runHashState :: State.StateT Hash.Ctx m a -> m (a, Hash.Ctx)
-runHashState x = State.runStateT x Hash.init
-
-hoistStream :: Pipes.Producer chunk (Except.ExceptT abort IO.IO) commit
-    -> Pipes.Producer chunk (State.StateT Hash.Ctx
-        (Except.ExceptT abort (Resource.ResourceT IO.IO))) commit
-hoistStream = Pipes.hoist (Monad.lift . Except.mapExceptT Monad.lift)
-
-writeAndHash :: (IO.MonadIO m, State.MonadState Hash.Ctx m) =>
-    IO.Handle -> Strict.ByteString -> m ()
-writeAndHash handle chunk = do
-
-    -- Write to the file
-    Monad.liftIO $ Strict.ByteString.hPut handle chunk
-
-    -- Update the state of the hash function
-    State.modify' \hashState -> Hash.update hashState chunk
+writeAndHash :: HashFunction -> IO.Handle
+    -> Fold.EffectfulFold (Except.ExceptT abort IO.IO) Strict.ByteString IO.FilePath
+writeAndHash (HashFunction hash) handle =
+    (Fold.effect \chunk -> Monad.liftIO (Strict.ByteString.hPut handle chunk))
+    *> Fold.fold hash
 
 runResourceEither :: (IO.MonadIO m, Except.MonadError abort m) =>
     Resource.ResourceT IO.IO (Either.Either abort a) -> m a
@@ -168,15 +158,15 @@ liftExceptIO x = do
     r <- Except.runExceptT (Except.mapExceptT Monad.liftIO x)
     Except.liftEither r
 
-{-| Write a stream of strict byte strings to a hash-addressed directory
+{-| Write a stream of strict ByteStrings to a hash-addressed directory
+
+If the producer throws an exception, nothing will be written and the
+exception will be re-thrown.
 
 This is a simplified variant of 'writeExcept'. -}
 writeStream :: forall commit m. IO.MonadIO m =>
-    Directory {- ^ The hash-addressed file store to write to; see 'init' -}
-    -> Pipes.Producer Strict.ByteString IO.IO commit
-          {- ^ Producer of strict byte string content to write
-
-               If this throws an exception, nothing will be written. -}
+    Directory -- ^ Where to write
+    -> Pipes.Producer Strict.ByteString IO.IO commit -- ^ What to write
     -> m (commit, WriteResult)
 writeStream dir source = voidExcept $ writeExcept dir (Pipes.hoist Monad.lift source)
 
@@ -186,12 +176,12 @@ voidLeft = \case{ Either.Left x -> absurd x; Either.Right x -> x }
 voidExcept :: Functor m => Except.ExceptT Void m a -> m a
 voidExcept = Except.runExceptT >>> fmap voidLeft
 
-{-| Write a lazy byte string to a hash-addressed directory
+{-| Write a lazy ByteString to a hash-addressed directory
 
 This is a simplified variant of 'writeStream'. -}
 writeLazy :: forall m. IO.MonadIO m =>
-    Directory {- ^ The hash-addressed file store to write to; see 'init' -}
-    -> Lazy.ByteString {- ^ Lazy byte string content to write -}
+    Directory -- ^ Where to write
+    -> Lazy.ByteString -- ^ What to write
     -> m WriteResult
 writeLazy dir lbs = writeStream dir (lbsProducer lbs) <&> (\((), x) -> x)
 
