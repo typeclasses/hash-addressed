@@ -72,7 +72,7 @@ writeExcept :: forall abort commit m. (IO.MonadIO m, Except.MonadError abort m) 
     -> Pipes.Producer Strict.ByteString (Except.ExceptT abort IO.IO) commit
         -- ^ What to write
     -> m (commit, WriteResult)
-writeExcept dir stream = runResourceEither do
+writeExcept dir stream = (liftExceptIO . Except.ExceptT . Resource.runResourceT) do
 
     {-  Where the system in general keeps its temporary files  -}
     temporaryRoot <- Monad.liftIO Temporary.getCanonicalTemporaryDirectory
@@ -152,11 +152,6 @@ writeAndHash :: HashFunction -> IO.Handle
 writeAndHash (HashFunction hash) handle =
     (Fold.effect \chunk -> Monad.liftIO (Strict.ByteString.hPut handle chunk))
     *> (HashName <$> Fold.fold hash)
-
-runResourceEither :: (IO.MonadIO m, Except.MonadError abort m) =>
-    Resource.ResourceT IO.IO (Either.Either abort a) -> m a
-runResourceEither =
-    liftExceptIO . Except.ExceptT . Resource.runResourceT @IO.IO
 
 liftExceptIO :: forall e m a. (IO.MonadIO m, Except.MonadError e m) =>
     Except.ExceptT e IO.IO a -> m a
