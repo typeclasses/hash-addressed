@@ -52,6 +52,11 @@ data WriteType =
                    --   is already present in the directory
   | NewContent     -- ^ A new file was written into the directory
 
+{-| File path within a hash-addressed directory
+
+This does no include the directory part, just the file name. -}
+newtype HashName = HashName IO.FilePath
+
 {-| Write a stream of strict ByteStrings to a hash-addressed directory,
     possibly aborting mid-stream with an error value instead
 
@@ -93,7 +98,8 @@ writeExcept dir stream = runResourceEither do
 
     {-  Run the continuation, doing two things at once with the ByteString
         chunks it gives us: write the file, and update a hash context -}
-    abortOrCommit <- Monad.lift $ runStream (hashFunction dir) handle stream
+    abortOrCommit :: Either.Either abort (HashName, commit) <-
+        Monad.lift $ runStream (hashFunction dir) handle stream
 
     {-  Once we're done writing the file, we no longer need the handle.  -}
     Resource.release handleRelease {- (🍓) -}
@@ -107,9 +113,9 @@ writeExcept dir stream = runResourceEither do
 finalize :: Pipes.MonadIO m =>
     Directory
     -> IO.FilePath  {- ^ Path of the temporarily file -}
-    -> IO.FilePath  {- ^ Name of the final file -}
+    -> HashName
     -> m WriteResult
-finalize dir temporaryFile name = do
+finalize dir temporaryFile (HashName name) = do
 
     let hashAddressedFile = directoryPath dir </> name
 
@@ -134,7 +140,7 @@ finalize dir temporaryFile name = do
 
 runStream :: forall abort commit. HashFunction -> IO.Handle
     -> Pipes.Producer Strict.ByteString (Except.ExceptT abort IO.IO) commit
-    -> IO.IO (Either.Either abort (IO.FilePath, commit))
+    -> IO.IO (Either.Either abort (HashName, commit))
 runStream hash handle stream =
     case writeAndHash hash handle of
         Fold.EffectfulFold{ Fold.initial, Fold.step, Fold.extract } ->
@@ -142,10 +148,10 @@ runStream hash handle stream =
                 Pipes.foldM' step initial extract stream
 
 writeAndHash :: HashFunction -> IO.Handle
-    -> Fold.EffectfulFold (Except.ExceptT abort IO.IO) Strict.ByteString IO.FilePath
+    -> Fold.EffectfulFold (Except.ExceptT abort IO.IO) Strict.ByteString HashName
 writeAndHash (HashFunction hash) handle =
     (Fold.effect \chunk -> Monad.liftIO (Strict.ByteString.hPut handle chunk))
-    *> Fold.fold hash
+    *> (HashName <$> Fold.fold hash)
 
 runResourceEither :: (IO.MonadIO m, Except.MonadError abort m) =>
     Resource.ResourceT IO.IO (Either.Either abort a) -> m a
