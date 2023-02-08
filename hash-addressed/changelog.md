@@ -1,3 +1,29 @@
+0.2.0.0 (2023-02-08)
+----------------------------------------------------------------
+
+Change type of stream parameter in `writeExcept` from
+
+```haskell
+Producer ByteString (ExceptT abort IO) commit
+```
+
+to
+
+``haskell
+Producer ByteString IO (Either abort commit)
+```
+
+The new version is equivalent (via the `ExceptT` constructor) to
+
+``haskell
+ExceptT abort (Producer ByteString IO) commit
+```
+
+and so what this change is doing is reversing the order of the
+monad transformers. The overall result is the same, but the new
+version seems slightly easier to work with.
+
+
 0.1.0.0 (2023-01-31)
 ----------------------------------------------------------------
 

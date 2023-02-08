@@ -74,7 +74,7 @@ An @abort@ thrown via 'Except.ExceptT' will be re-thrown via 'Except.MonadError'
 and an exception thrown via 'IO' will be re-thrown via 'IO'. -}
 writeExcept :: forall abort commit m. (MonadIO m, MonadError abort m) =>
     Directory -- ^ Where to write
-    -> Pipes.Producer Strict.ByteString (ExceptT abort IO) commit
+    -> Pipes.Producer Strict.ByteString IO (Either abort commit)
         -- ^ What to write
     -> m (commit, WriteResult)
 writeExcept dir stream = run action
@@ -148,13 +148,14 @@ finalize dir temporaryFile (HashName name) = do
     pure WriteResult{ hashAddressedFile, writeType }
 
 runStream :: forall abort commit. HashFunction -> Handle
-    -> Pipes.Producer Strict.ByteString (ExceptT abort IO) commit
+    -> Pipes.Producer Strict.ByteString IO (Either abort commit)
     -> IO (Either abort (HashName, commit))
 runStream hash handle stream =
     case writeAndHash hash handle of
         Fold.EffectfulFold{ Fold.initial, Fold.step, Fold.extract } ->
             Except.runExceptT $
-                Pipes.foldM' step initial extract stream
+                Pipes.foldM' step initial extract $
+                    Pipes.hoist lift stream >>= Except.liftEither
 
 writeAndHash :: HashFunction -> Handle
     -> Fold.EffectfulFold (ExceptT abort IO) Strict.ByteString HashName
@@ -172,7 +173,7 @@ writeStream :: forall commit m. MonadIO m =>
     Directory -- ^ Where to write
     -> Pipes.Producer Strict.ByteString IO commit -- ^ What to write
     -> m (commit, WriteResult)
-writeStream dir source = voidExcept $ writeExcept dir $ Pipes.hoist lift source
+writeStream dir source = voidExcept $ writeExcept dir $ fmap Either.Right source
 
 voidLeft :: Either Void a -> a
 voidLeft = \case{ Either.Left x -> absurd x; Either.Right x -> x }
