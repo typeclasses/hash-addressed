@@ -16,7 +16,7 @@ ghc."9.2" = nixos-22-11.haskell.packages.ghc92.override (old: {
     overrides = combineOverrides old [
         sourceOverrides
         (new: old: {
-            gambler = new.callPackage ./nix/gambler-0.0.1.0.nix {};
+            gambler = new.callPackage ./nix/gambler-0.1.0.0.nix {};
             quaalude = new.callPackage ./nix/quaalude.nix {};
         })
     ];
@@ -26,7 +26,7 @@ ghc."9.4" = nixos-22-11.haskell.packages.ghc94.override (old: {
     overrides = combineOverrides old [
         sourceOverrides
         (new: old: {
-            gambler = new.callPackage ./nix/gambler-0.1.0.0.nix {};
+            gambler = new.callPackage ./nix/gambler-0.2.0.0.nix {};
             quaalude = new.callPackage ./nix/quaalude.nix {};
         })
     ];
