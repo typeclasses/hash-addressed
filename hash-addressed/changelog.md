@@ -15,13 +15,13 @@ Producer ByteString (ExceptT abort IO) commit
 
 to
 
-``haskell
+```haskell
 Producer ByteString IO (Either abort commit)
 ```
 
 The new version is equivalent (via the `ExceptT` constructor) to
 
-``haskell
+```haskell
 ExceptT abort (Producer ByteString IO) commit
 ```
 
